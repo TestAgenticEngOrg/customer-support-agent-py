@@ -6,7 +6,7 @@ import threading
 import uvicorn
 from fastapi import FastAPI
 from openai import OpenAI
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 import tools
 
@@ -16,6 +16,7 @@ log = logging.getLogger("customer-support-agent")
 MODEL = os.getenv("OPENAI_MODEL", "gpt-4.1-mini")
 MAX_TURNS = 5
 MAX_HISTORY = 20
+MAX_SESSIONS = 1000
 
 SYSTEM_PROMPT = """You are a Customer Support Agent for Acme Store.
 You help customers with orders, returns and general questions.
@@ -34,7 +35,7 @@ sessions_lock = threading.Lock()
 
 class ChatRequest(BaseModel):
     message: str
-    session_id: str = "default"
+    session_id: str = Field(min_length=8, max_length=128)
     context: dict | None = None
 
 
@@ -68,6 +69,9 @@ def chat(request: ChatRequest) -> ChatResponse:
         return ChatResponse(response="Sorry, something went wrong. Please try again shortly.")
     history.append({"role": "assistant", "content": answer})
     with sessions_lock:
+        sessions.pop(request.session_id, None)
+        if len(sessions) >= MAX_SESSIONS:
+            sessions.pop(next(iter(sessions)))  # Evict the least recently used session.
         sessions[request.session_id] = history[-MAX_HISTORY:]
     return ChatResponse(response=answer)
 
