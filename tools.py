@@ -59,12 +59,9 @@ def call(name: str, args: dict):
 
 def _schema(name: str, description: str, properties: dict) -> dict:
     return {
-        "type": "function",
-        "function": {
-            "name": name,
-            "description": description,
-            "parameters": {"type": "object", "properties": properties, "required": list(properties)},
-        },
+        "name": name,
+        "description": description,
+        "input_schema": {"type": "object", "properties": properties, "required": list(properties)},
     }
 
 

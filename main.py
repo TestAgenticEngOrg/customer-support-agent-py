@@ -4,8 +4,8 @@ import os
 import threading
 
 import uvicorn
+from anthropic import Anthropic
 from fastapi import FastAPI
-from openai import OpenAI
 from pydantic import BaseModel, Field
 
 import tools
@@ -13,7 +13,7 @@ import tools
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("customer-support-agent")
 
-MODEL = os.getenv("OPENAI_MODEL", "gpt-4.1-mini")
+MODEL = os.getenv("ANTHROPIC_MODEL", "claude-opus-5-5")
 MAX_TURNS = 5
 MAX_HISTORY = 20
 MAX_SESSIONS = 1000
@@ -25,10 +25,19 @@ You help customers with orders, returns and general questions.
   and share the ticket ID.
 - Keep answers short, friendly and factual."""
 
-client = OpenAI()  # Reads OPENAI_API_KEY from the environment.
+# Agent Manager injects these from the LLM provider attached to the agent, so all model calls
+# go through the AI gateway. Without them the SDK falls back to its defaults (ANTHROPIC_API_KEY).
+url = os.environ.get("ANTHROPIC_URL")
+apikey = os.environ.get("ANTHROPIC_API_KEY")
+
+client = Anthropic(
+    base_url=url,
+    api_key=apikey,
+    default_headers={"API-Key": apikey} if apikey else None,
+)
 app = FastAPI(title="Customer Support Agent")
 
-# In-memory conversation history per session. Lost on restart.
+# In-memory conversation history per session: user messages and final answers only. Lost on restart.
 sessions: dict[str, list[dict]] = {}
 sessions_lock = threading.Lock()
 
@@ -44,16 +53,28 @@ class ChatResponse(BaseModel):
 
 
 def run_agent(history: list[dict]) -> str:
-    messages = [{"role": "system", "content": SYSTEM_PROMPT}, *history]
+    messages = list(history)
     for _ in range(MAX_TURNS):
-        completion = client.chat.completions.create(model=MODEL, messages=messages, tools=tools.SCHEMAS)
-        reply = completion.choices[0].message
-        if not reply.tool_calls:
-            return reply.content or ""
-        messages.append(reply.model_dump(exclude_none=True))
-        for call in reply.tool_calls:
-            result = tools.call(call.function.name, json.loads(call.function.arguments or "{}"))
-            messages.append({"role": "tool", "tool_call_id": call.id, "content": json.dumps(result)})
+        response = client.messages.create(
+            model=MODEL,
+            max_tokens=16000,
+            system=SYSTEM_PROMPT,
+            tools=tools.SCHEMAS,
+            output_config={"effort": "low"},
+            messages=messages,
+        )
+        if response.stop_reason == "refusal":
+            return "Sorry, I can't help with that request."
+        if response.stop_reason != "tool_use":
+            return "".join(b.text for b in response.content if b.type == "text")
+        # Pass the reply back unchanged (including thinking blocks), then all tool results in one message.
+        messages.append({"role": "assistant", "content": response.content})
+        results = [
+            {"type": "tool_result", "tool_use_id": b.id, "content": json.dumps(tools.call(b.name, b.input))}
+            for b in response.content
+            if b.type == "tool_use"
+        ]
+        messages.append({"role": "user", "content": results})
     return "Sorry, I couldn't complete that request. Please try rephrasing."
 
 
