@@ -53,8 +53,9 @@ class McpTools:
     async def _connect(self, url: str, key: str) -> None:
         stack = AsyncExitStack()
         try:
+            # The docs' hosted-agent sample sends API-Key; the proxy's default inbound header is X-API-Key.
             http = await stack.enter_async_context(
-                httpx2.AsyncClient(headers={"API-Key": key}, timeout=TIMEOUT_SECONDS)
+                httpx2.AsyncClient(headers={"API-Key": key, "X-API-Key": key}, timeout=TIMEOUT_SECONDS)
             )
             read, write = await stack.enter_async_context(streamable_http_client(url, http_client=http))
             session = await stack.enter_async_context(ClientSession(read, write))
